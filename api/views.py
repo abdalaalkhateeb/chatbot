@@ -4,6 +4,9 @@ from dotenv import load_dotenv
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
+from rest_framework.parsers import MultiPartParser, FormParser
+import mimetypes
+from pathlib import Path
 
 # تحميل متغيرات البيئة من ملف .env
 load_dotenv()
@@ -17,6 +20,8 @@ except Exception as e:
     model = None
 
 class GeminiChatView(APIView):
+    parser_classes = (MultiPartParser, FormParser)
+
     def post(self, request, *args, **kwargs):
         if not model:
             return Response(
@@ -24,8 +29,9 @@ class GeminiChatView(APIView):
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
 
-        # الحصول على السؤال من طلب POST
+        # الحصول على السؤال وملف PDF من طلب POST
         prompt = request.data.get('prompt')
+        file_obj = request.FILES.get('file')
 
         if not prompt:
             return Response(
@@ -34,14 +40,38 @@ class GeminiChatView(APIView):
             )
 
         try:
-            # إرسال السؤال إلى Gemini والحصول على الإجابة
-            response = model.generate_content(prompt)
+            if file_obj:
+                # التحقق من أن الملف PDF
+                if not file_obj.name.lower().endswith('.pdf'):
+                    return Response(
+                        {"error": "Only PDF files are supported."},
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
+                
+                # حفظ الملف مؤقتاً
+                temp_file_path = os.path.join('temp', file_obj.name)
+                os.makedirs('temp', exist_ok=True)
+                
+                with open(temp_file_path, 'wb+') as destination:
+                    for chunk in file_obj.chunks():
+                        destination.write(chunk)
+                
+                try:
+                    # إرسال الملف مع السؤال إلى Gemini
+                    response = model.generate_content([prompt, temp_file_path])
+                finally:
+                    # حذف الملف المؤقت بعد الاستخدام
+                    if os.path.exists(temp_file_path):
+                        os.remove(temp_file_path)
+            else:
+                # إرسال السؤال فقط إذا لم يتم تحميل ملف
+                response = model.generate_content(prompt)
             
             # إرجاع الإجابة كـ JSON
             return Response({"response": response.text}, status=status.HTTP_200_OK)
 
         except Exception as e:
             return Response(
-                {"error": f"An error occurred with the Gemini API: {str(e)}"},
+                {"error": f"An error occurred: {str(e)}"},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
